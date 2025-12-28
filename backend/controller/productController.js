@@ -7,101 +7,45 @@ export const createProduct = async (req, res) => {
     try {
         const { name, description, price, category, features, stock, specifications } = req.body;
         
-        // Upload images to Cloudinary
         let uploadedImages = [];
         if (req.files && req.files.length > 0) {
             for (const file of req.files) {
-                try {
-                    if (!process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET || !process.env.CLOUDINARY_CLOUD_NAME) {
-                        throw new Error('Cloudinary credentials are not properly configured. Please check your environment variables.');
-                    }
-
-                    const result = await cloudinary.uploader.upload(file.path, {
-                        folder: 'robotics_products',
-                        resource_type: 'auto'
-                    });
-                    
-                    if (!result || !result.secure_url) {
-                        throw new Error('Failed to upload image to Cloudinary: Invalid response');
-                    }
-                    
-                    uploadedImages.push({
-                        url: result.secure_url,
-                        public_id: result.public_id
-                    });
-                    
-                    // Delete temp file
-                    await fs.unlink(file.path);
-                } catch (uploadError) {
-                    console.error('Image upload error:', uploadError);
-                    // If it's an authentication error, provide more specific guidance
-                    if (uploadError.http_code === 401) {
-                        throw new Error('Cloudinary authentication failed. Please verify your API key and secret in the .env file.');
-                    }
-                    throw new Error(`Failed to upload image: ${uploadError.message}`);
-                }
+                const result = await cloudinary.uploader.upload(file.path, {
+                    folder: 'robotics_products'
+                });
+                uploadedImages.push({
+                    url: result.secure_url,
+                    public_id: result.public_id
+                });
+                await fs.unlink(file.path);
             }
         }
 
-        // Parse features and specifications
-        const featureArray = features ? 
-            (Array.isArray(features) ? features : features.split(',').map(f => f.trim())) : 
-            [];
-        
-        const specs = specifications ? 
-            (typeof specifications === 'string' ? JSON.parse(specifications) : specifications) : 
-            {};
+        const featureArray = Array.isArray(features) ? features : features?.split(',').map(f => f.trim()) || [];
+        const specs = typeof specifications === 'string' ? JSON.parse(specifications) : specifications || {};
 
-        // Create product
-        const product = new Product({
-            name,
-            description,
+        const product = await Product.create({
+            name: name,
+            description: description,
             price: Number(price),
-            category,
+            category: category,
             images: uploadedImages,
             features: featureArray,
             stock: Number(stock) || 0,
             specifications: specs
         });
 
-        const savedProduct = await product.save();
-
         res.status(201).json({
             success: true,
             message: 'Product created successfully',
-            data: savedProduct
+            data: product
         });
-
     } catch (error) {
-        console.error('Create product error:', error);
-        
-        // Clean up uploaded images on error
-        if (req.files) {
-            for (const file of req.files) {
-                try {
-                    await fs.unlink(file.path);
-                } catch (cleanupError) {
-                    console.error('Cleanup error:', cleanupError);
-                }
-            }
-        }
-        
-        // More specific error status codes
-        let statusCode = 500;
-        let errorMessage = 'Error creating product';
-        
-        if (error.message.includes('Cloudinary authentication failed')) {
-            statusCode = 401;
-            errorMessage = 'Cloudinary authentication failed. Please check your API credentials.';
-        } else if (error.message.includes('Failed to upload image')) {
-            statusCode = 400;
-            errorMessage = error.message;
-        }
-        
-        res.status(statusCode).json({
+        console.log('Error creating product:', error);
+        res.status(400).json({
             success: false,
-            message: errorMessage,
-            error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+            message: 'Failed to create product',
+            error: error.message
         });
     }
 };
@@ -113,13 +57,15 @@ export const getAllProducts = async (req, res) => {
         
         res.status(200).json({
             success: true,
+            message: 'Products fetched successfully',
             count: products.length,
             data: products
         });
     } catch (error) {
-        res.status(500).json({
+        console.log('Error fetching products:', error);
+        res.status(400).json({
             success: false,
-            message: 'Error fetching products',
+            message: 'Failed to fetch products',
             error: error.message
         });
     }
@@ -139,12 +85,14 @@ export const getProductById = async (req, res) => {
         
         res.status(200).json({
             success: true,
+            message: 'Product fetched successfully',
             data: product
         });
     } catch (error) {
-        res.status(500).json({
+        console.log('Error fetching product:', error);
+        res.status(400).json({
             success: false,
-            message: 'Error fetching product',
+            message: 'Failed to fetch product',
             error: error.message
         });
     }
@@ -164,56 +112,38 @@ export const updateProduct = async (req, res) => {
 
         const updates = { ...req.body };
         
-        // Handle image updates
         if (req.files && req.files.length > 0) {
-            const newImages = [];
+            let newImages = [];
             
             for (const file of req.files) {
-                try {
-                    const result = await cloudinary.uploader.upload(file.path, {
-                        folder: 'robotics_products'
-                    });
-                    
-                    newImages.push({
-                        url: result.secure_url,
-                        public_id: result.public_id
-                    });
-                    
-                    await fs.unlink(file.path);
-                } catch (uploadError) {
-                    console.error('Image upload error:', uploadError);
-                }
+                const result = await cloudinary.uploader.upload(file.path, {
+                    folder: 'robotics_products'
+                });
+                newImages.push({
+                    url: result.secure_url,
+                    public_id: result.public_id
+                });
+                await fs.unlink(file.path);
             }
             
-            // Keep old images or replace
             if (req.body.keepOldImages === 'true') {
                 updates.images = [...product.images, ...newImages];
             } else {
-                // Delete old images
                 for (const image of product.images) {
-                    try {
-                        await cloudinary.uploader.destroy(image.public_id);
-                    } catch (deleteError) {
-                        console.error('Delete image error:', deleteError);
-                    }
+                    await cloudinary.uploader.destroy(image.public_id);
                 }
                 updates.images = newImages;
             }
         }
 
-        // Parse specifications if string
         if (updates.specifications && typeof updates.specifications === 'string') {
             updates.specifications = JSON.parse(updates.specifications);
         }
         
-        // Update product
         const updatedProduct = await Product.findByIdAndUpdate(
             req.params.id,
             updates,
-            { 
-                new: true, 
-                runValidators: true 
-            }
+            { new: true, runValidators: true }
         );
 
         res.status(200).json({
@@ -221,12 +151,11 @@ export const updateProduct = async (req, res) => {
             message: 'Product updated successfully',
             data: updatedProduct
         });
-
     } catch (error) {
-        console.error('Update product error:', error);
-        res.status(500).json({
+        console.log('Error updating product:', error);
+        res.status(400).json({
             success: false,
-            message: 'Error updating product',
+            message: 'Failed to update product',
             error: error.message
         });
     }
@@ -244,14 +173,9 @@ export const deleteProduct = async (req, res) => {
             });
         }
 
-        // Delete images from Cloudinary
         if (product.images.length > 0) {
             for (const image of product.images) {
-                try {
-                    await cloudinary.uploader.destroy(image.public_id);
-                } catch (deleteError) {
-                    console.error('Delete image error:', deleteError);
-                }
+                await cloudinary.uploader.destroy(image.public_id);
             }
         }
 
@@ -261,12 +185,11 @@ export const deleteProduct = async (req, res) => {
             success: true,
             message: 'Product deleted successfully'
         });
-
     } catch (error) {
-        console.error('Delete product error:', error);
-        res.status(500).json({
+        console.log('Error deleting product:', error);
+        res.status(400).json({
             success: false,
-            message: 'Error deleting product',
+            message: 'Failed to delete product',
             error: error.message
         });
     }
